@@ -1,7 +1,12 @@
+// 生成唯一的遊戲ID
+const gameId = 'game_' + Math.random().toString(36).substring(2) + '_' + Date.now();
+
 // 初始化 GUN
 const gun = Gun({
     peers: ['https://gun-manhattan.herokuapp.com/gun'],
-    localStorage: false  // 禁用本地存儲
+    localStorage: false,  // 禁用本地存儲
+    radisk: false,       // 禁用磁盤存儲
+    multicast: false     // 禁用多播
 });
 
 // 遊戲設定
@@ -13,7 +18,7 @@ const GAME_CONFIG = {
 };
 
 // 遊戲狀態
-const gameState = gun.get('drawingGame');
+const gameState = gun.get(gameId);
 const players = gameState.get('players');
 const currentDrawing = gameState.get('drawing');
 const messages = gameState.get('messages');
@@ -165,74 +170,31 @@ submitButton.addEventListener('click', submitDrawing);
 
 // 重置遊戲函數
 function resetGame() {
-    // 清除所有 gun 數據
-    gun.get('drawingGame').map().once((data, key) => {
-        if (data) {
-            gun.get('drawingGame').get(key).put(null);
-        }
-    });
-
-    // 強制斷開所有連接
-    gun.get('drawingGame').off();
-    
-    // 清除本地存儲
-    localStorage.clear();
-    
     // 清除所有遊戲狀態
+    const clearData = (node) => {
+        if (!node) return;
+        node.map().once((data, key) => {
+            if (data) {
+                node.get(key).put(null);
+            }
+        });
+    };
+    
+    // 清除所有數據
+    clearData(gameState);
+    clearData(players);
+    clearData(messages);
+    clearData(currentDrawing);
+    
+    // 斷開所有連接
+    gun.get(gameId).off();
+    
+    // 清除本地存儲和會話存儲
+    localStorage.clear();
+    sessionStorage.clear();
+    
+    // 延遲重載頁面，確保數據已被清除
     setTimeout(() => {
-        // 重新獲取遊戲狀態的引用並清除
-        gameState.get('currentDrawer').put(null);
-        gameState.get('currentWord').put(null);
-        gameState.get('currentOptions').put(null);
-        gameState.get('gamePhase').put(null);
-        gameState.get('drawing').put(null);
-        
-        // 清除所有玩家
-        players.map().once((data, key) => {
-            players.get(key).put(null);
-        });
-        
-        // 清除所有訊息
-        messages.map().once((data, key) => {
-            messages.get(key).put(null);
-        });
-
-        // 清除畫布和介面
-        clearCanvas();
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        optionsDiv.innerHTML = '';
-        playersDiv.innerHTML = '';
-        messagesDiv.innerHTML = '';
-        playerListDiv.innerHTML = '';
-        
-        // 重置所有狀態
-        currentPlayer = null;
-        canDraw = false;
-        isGuessingPhase = false;
-        correctAnswer = '';
-        currentOptions = [];
-        
-        // 清除計時器
-        clearInterval(timerInterval);
-        timerElement.textContent = '剩餘時間: --:--';
-        timerElement.className = 'timer';
-        
-        // 重置所有輸入
-        joinButton.disabled = false;
-        playerNameInput.disabled = false;
-        playerNameInput.value = '';
-        submitButton.style.display = 'none';
-        messageInput.value = '';
-        colorPicker.value = '#000000';
-        currentColor = '#000000';
-        brushSize.value = '5';
-        currentSize = 5;
-        wordDisplay.textContent = '';
-        
-        // 更新遊戲狀態顯示
-        updateGameStatus(0);
-        
-        // 刷新頁面
         location.reload();
     }, 1000);
 }
@@ -401,13 +363,28 @@ function updateGameStatus(playerCount) {
 
 // 檢查玩家數量並更新遊戲狀態
 function checkPlayersAndUpdateGame(playersData) {
-    const playerCount = Object.keys(playersData || {}).length;
+    if (!playersData) {
+        updateGameStatus(0);
+        return false;
+    }
+    
+    // 過濾掉無效的玩家數據
+    const validPlayers = {};
+    Object.entries(playersData).forEach(([id, player]) => {
+        if (player && player.name && player.id) {
+            validPlayers[id] = player;
+        }
+    });
+    
+    const playerCount = Object.keys(validPlayers).length;
     updateGameStatus(playerCount);
     
     // 如果人數不足，停止遊戲
     if (playerCount < GAME_CONFIG.MIN_PLAYERS) {
         gameState.get('currentWord').put(null);
         gameState.get('currentOptions').put(null);
+        gameState.get('currentDrawer').put(null);
+        gameState.get('gamePhase').put(null);
         return false;
     }
     
@@ -555,7 +532,18 @@ players.map().on((player, id) => {
 
 // 監聽玩家列表變化
 players.on((data) => {
-    if (!data) return;
+    if (!data) {
+        updateGameStatus(0);
+        return;
+    }
+    
+    // 移除無效的玩家數據
+    Object.entries(data).forEach(([id, player]) => {
+        if (!player || !player.name || !player.id) {
+            players.get(id).put(null);
+        }
+    });
+    
     checkPlayersAndUpdateGame(data);
     updatePlayerList();
 });
