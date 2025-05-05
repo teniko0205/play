@@ -1,9 +1,13 @@
-// 生成唯一的遊戲ID
-const gameId = 'game_' + Math.random().toString(36).substring(2) + '_' + Date.now();
+// 使用固定的遊戲房間ID
+const GAME_ROOM = 'drawingGame_20250505';
 
 // 初始化 GUN
 const gun = Gun({
-    peers: ['https://gun-manhattan.herokuapp.com/gun'],
+    peers: [
+        'https://gun-manhattan.herokuapp.com/gun',
+        'https://gun-us.herokuapp.com/gun',
+        'https://gun-eu.herokuapp.com/gun'
+    ],
     localStorage: false,  // 禁用本地存儲
     radisk: false,       // 禁用磁盤存儲
     multicast: false     // 禁用多播
@@ -18,7 +22,7 @@ const GAME_CONFIG = {
 };
 
 // 遊戲狀態
-const gameState = gun.get(gameId);
+const gameState = gun.get(GAME_ROOM);
 const players = gameState.get('players');
 const currentDrawing = gameState.get('drawing');
 const messages = gameState.get('messages');
@@ -187,7 +191,7 @@ function resetGame() {
     clearData(currentDrawing);
     
     // 斷開所有連接
-    gun.get(gameId).off();
+    gun.get(GAME_ROOM).off();
     
     // 清除本地存儲和會話存儲
     localStorage.clear();
@@ -580,6 +584,37 @@ gameState.get('currentWord').on((word) => {
     }
 });
 
+// 修改分享功能
+document.getElementById('shareGame').addEventListener('click', shareGame);
+
+// 更新分享功能實現
+function shareGame() {
+    // 使用目前的網頁網址即可
+    const gameUrl = window.location.href;
+    
+    // 複製到剪貼簿
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(gameUrl)
+            .then(() => {
+                alert('遊戲連結已複製！\n分享給朋友即可一起遊玩');
+                messages.set({
+                    playerId: 'system',
+                    playerName: 'System',
+                    text: '遊戲連結已複製，快分享給朋友吧！',
+                    timestamp: Date.now()
+                });
+            })
+            .catch(showFallbackCopy);
+    } else {
+        showFallbackCopy();
+    }
+}
+
+function showFallbackCopy() {
+    const gameUrl = window.location.href;
+    alert('請複製以下網址分享給朋友：\n' + gameUrl);
+}
+
 // 修改加入遊戲的邏輯，自動顯示管理界面
 joinButton.addEventListener('click', () => {
     const name = playerNameInput.value.trim();
@@ -594,21 +629,23 @@ joinButton.addEventListener('click', () => {
             currentPlayer = {
                 name: name,
                 score: 0,
-                id: Math.random().toString(36).substring(2)
+                id: Math.random().toString(36).substring(2),
+                lastActive: Date.now()
             };
             
             players.get(currentPlayer.id).put(currentPlayer);
             joinButton.disabled = true;
             playerNameInput.disabled = true;
 
-            // 如果是第一個玩家，等待其他玩家加入
+            // 如果是第一個玩家，等待其他玩家加入並顯示分享提示
             if (playerCount === 0) {
                 messages.set({
                     playerId: 'system',
                     playerName: 'System',
-                    text: '等待更多玩家加入...',
+                    text: '等待更多玩家加入...點擊分享按鈕邀請其他玩家！',
                     timestamp: Date.now()
                 });
+                shareGame();
             } 
             // 如果達到最小人數且還沒有畫圖者，設置第一個玩家為畫圖者
             else if (playerCount + 1 >= GAME_CONFIG.MIN_PLAYERS) {
