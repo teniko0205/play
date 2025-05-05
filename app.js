@@ -1,6 +1,7 @@
 // 初始化 GUN
 const gun = Gun({
-    peers: ['https://gun-manhattan.herokuapp.com/gun']
+    peers: ['https://gun-manhattan.herokuapp.com/gun'],
+    localStorage: false  // 禁用本地存儲
 });
 
 // 遊戲設定
@@ -51,6 +52,8 @@ const gameStatusDiv = document.getElementById('gameStatus');
 const timerElement = document.getElementById('timer');
 const submitButton = document.getElementById('submitDrawing');
 const resetButton = document.getElementById('resetGame');
+const playerManagementDiv = document.getElementById('playerManagement');
+const playerListDiv = document.getElementById('playerList');
 
 // 設置畫布大小
 function resizeCanvas() {
@@ -162,101 +165,93 @@ submitButton.addEventListener('click', submitDrawing);
 
 // 重置遊戲函數
 function resetGame() {
-    // 重新初始化 gun 實例
-    gun.get('drawingGame').put(null);
+    // 清除所有 gun 數據
+    gun.get('drawingGame').map().once((data, key) => {
+        if (data) {
+            gun.get('drawingGame').get(key).put(null);
+        }
+    });
+
+    // 強制斷開所有連接
+    gun.get('drawingGame').off();
     
-    // 等待一小段時間確保數據被清除
+    // 清除本地存儲
+    localStorage.clear();
+    
+    // 清除所有遊戲狀態
     setTimeout(() => {
-        // 重新獲取遊戲狀態的引用
+        // 重新獲取遊戲狀態的引用並清除
         gameState.get('currentDrawer').put(null);
         gameState.get('currentWord').put(null);
         gameState.get('currentOptions').put(null);
         gameState.get('gamePhase').put(null);
         gameState.get('drawing').put(null);
         
-        // 遍歷並清除所有玩家
+        // 清除所有玩家
         players.map().once((data, key) => {
-            if (data) {
-                players.get(key).put(null);
-            }
+            players.get(key).put(null);
         });
         
-        // 遍歷並清除所有訊息
+        // 清除所有訊息
         messages.map().once((data, key) => {
-            if (data) {
-                messages.get(key).put(null);
-            }
+            messages.get(key).put(null);
         });
+
+        // 清除畫布和介面
+        clearCanvas();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        optionsDiv.innerHTML = '';
+        playersDiv.innerHTML = '';
+        messagesDiv.innerHTML = '';
+        playerListDiv.innerHTML = '';
+        
+        // 重置所有狀態
+        currentPlayer = null;
+        canDraw = false;
+        isGuessingPhase = false;
+        correctAnswer = '';
+        currentOptions = [];
         
         // 清除計時器
         clearInterval(timerInterval);
         timerElement.textContent = '剩餘時間: --:--';
         timerElement.className = 'timer';
         
-        // 清除畫布
-        clearCanvas();
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // 清除選項
-        optionsDiv.innerHTML = '';
-        
-        // 清除玩家列表顯示
-        playersDiv.innerHTML = '';
-        
-        // 清除訊息顯示
-        messagesDiv.innerHTML = '';
-        
-        // 重置玩家狀態
-        if (currentPlayer) {
-            currentPlayer = null;
-            canDraw = false;
-        }
-        
-        // 重置遊戲階段
-        isGuessingPhase = false;
-        correctAnswer = '';
-        currentOptions = [];
-        
-        // 重置所有輸入狀態
+        // 重置所有輸入
         joinButton.disabled = false;
         playerNameInput.disabled = false;
         playerNameInput.value = '';
         submitButton.style.display = 'none';
         messageInput.value = '';
-        
-        // 重置顏色和筆刷大小
         colorPicker.value = '#000000';
         currentColor = '#000000';
         brushSize.value = '5';
         currentSize = 5;
-        
-        // 清除詞彙顯示
         wordDisplay.textContent = '';
         
         // 更新遊戲狀態顯示
         updateGameStatus(0);
         
-        // 添加系統訊息
-        setTimeout(() => {
-            messages.set({
-                playerId: 'system',
-                playerName: 'System',
-                text: '遊戲已完全重置，請重新整理頁面後加入遊戲',
-                timestamp: Date.now()
-            });
-        }, 500);
-        
-        // 提示使用者重新整理頁面
-        alert('遊戲已重置，請所有玩家重新整理頁面！');
+        // 刷新頁面
         location.reload();
     }, 1000);
 }
 
-// 監聽重置按鈕點擊
+// 添加強制重置功能
+window.forceReset = function() {
+    const confirmForceReset = confirm('確定要強制重置遊戲嗎？這將中斷所有玩家的連接。');
+    if (confirmForceReset) {
+        resetGame();
+    }
+};
+
+// 修改重置按鈕點擊事件
 resetButton.addEventListener('click', () => {
-    const confirmReset = confirm('確定要重置遊戲嗎？這將清除所有遊戲進度。');
+    const confirmReset = confirm('選擇重置方式：\n- 確定：正常重置\n- 取消：強制重置');
     if (confirmReset) {
         resetGame();
+    } else {
+        window.forceReset();
     }
 });
 
@@ -488,6 +483,41 @@ function makeGuess(answer) {
     }
 }
 
+// 顯示玩家管理界面
+function showPlayerManagement() {
+    playerManagementDiv.style.display = 'block';
+    updatePlayerList();
+}
+
+// 更新玩家列表
+function updatePlayerList() {
+    playerListDiv.innerHTML = '';
+    players.map().once((player, id) => {
+        if (!player) return;
+        
+        const playerItem = document.createElement('div');
+        playerItem.className = 'player-item';
+        playerItem.innerHTML = `
+            <span>${player.name} (${player.score || 0}分)</span>
+            <button class="kick-button" onclick="kickPlayer('${id}')">踢出</button>
+        `;
+        playerListDiv.appendChild(playerItem);
+    });
+}
+
+// 踢出玩家
+window.kickPlayer = function(playerId) {
+    if (confirm('確定要踢出這個玩家嗎？')) {
+        players.get(playerId).put(null);
+        messages.set({
+            playerId: 'system',
+            playerName: 'System',
+            text: '一位玩家已被踢出遊戲',
+            timestamp: Date.now()
+        });
+    }
+}
+
 // 監聽遊戲階段
 gameState.get('gamePhase').on(async (phase) => {
     if (!phase || !currentPlayer) return;
@@ -527,6 +557,7 @@ players.map().on((player, id) => {
 players.on((data) => {
     if (!data) return;
     checkPlayersAndUpdateGame(data);
+    updatePlayerList();
 });
 
 // 監聽當前畫圖者
@@ -561,7 +592,7 @@ gameState.get('currentWord').on((word) => {
     }
 });
 
-// 修改加入遊戲的邏輯
+// 修改加入遊戲的邏輯，自動顯示管理界面
 joinButton.addEventListener('click', () => {
     const name = playerNameInput.value.trim();
     if (name) {
@@ -601,6 +632,9 @@ joinButton.addEventListener('click', () => {
                     }
                 });
             }
+
+            // 顯示玩家管理界面
+            showPlayerManagement();
         });
     }
 });
