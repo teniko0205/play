@@ -16,6 +16,10 @@
         <div id="app">
             <div class="game-container">
                 <div class="canvas-container">
+                    <div class="canvas-header">
+                        <div id="timer" class="timer">剩餘時間: --:--</div>
+                        <button id="submitDrawing" class="submit-button" style="display: none;">提交作畫</button>
+                    </div>
                     <canvas id="drawingCanvas"></canvas>
                     <div class="controls">
                         <input type="color" id="colorPicker" value="#000000">
@@ -27,7 +31,9 @@
                     <div id="playerInfo">
                         <input type="text" id="playerName" placeholder="輸入你的名字">
                         <button id="joinGame">加入遊戲</button>
+                        <button id="resetGame" class="reset-button">重置遊戲</button>
                     </div>
+                    <div id="gameStatus" class="game-status"></div>
                     <div id="wordDisplay"></div>
                     <div id="optionsContainer" class="options-container">
                         <div id="options" class="options"></div>

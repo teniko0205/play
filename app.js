@@ -3,6 +3,14 @@ const gun = Gun({
     peers: ['https://gun-manhattan.herokuapp.com/gun']
 });
 
+// 遊戲設定
+const GAME_CONFIG = {
+    MIN_PLAYERS: 3,
+    MAX_PLAYERS: 8,
+    DRAWING_TIME: 120, // 2分鐘
+    GUESSING_TIME: 30, // 30秒
+};
+
 // 遊戲狀態
 const gameState = gun.get('drawingGame');
 const players = gameState.get('players');
@@ -20,6 +28,11 @@ const wordCategories = {
 let currentOptions = [];
 let correctAnswer = '';
 
+// 新增計時相關變數
+let timerInterval = null;
+let remainingTime = 0;
+let isGuessingPhase = false;
+
 // DOM 元素
 const canvas = document.getElementById('drawingCanvas');
 const ctx = canvas.getContext('2d');
@@ -34,6 +47,10 @@ const messagesDiv = document.getElementById('messages');
 const wordDisplay = document.getElementById('wordDisplay');
 const playersDiv = document.getElementById('players');
 const optionsDiv = document.getElementById('options');
+const gameStatusDiv = document.getElementById('gameStatus');
+const timerElement = document.getElementById('timer');
+const submitButton = document.getElementById('submitDrawing');
+const resetButton = document.getElementById('resetGame');
 
 // 設置畫布大小
 function resizeCanvas() {
@@ -48,6 +65,200 @@ let isDrawing = false;
 let currentColor = '#000000';
 let currentSize = 5;
 let canDraw = false;
+
+// 更新計時器顯示
+function updateTimer() {
+    const minutes = Math.floor(remainingTime / 60);
+    const seconds = remainingTime % 60;
+    timerElement.textContent = `剩餘時間: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    
+    // 更新計時器樣式
+    if (remainingTime <= 10) {
+        timerElement.className = 'timer danger';
+    } else if (remainingTime <= 30) {
+        timerElement.className = 'timer warning';
+    } else {
+        timerElement.className = 'timer';
+    }
+}
+
+// 開始計時
+function startTimer(duration, isGuessing = false) {
+    clearInterval(timerInterval);
+    remainingTime = duration;
+    isGuessingPhase = isGuessing;
+    updateTimer();
+
+    return new Promise((resolve) => {
+        timerInterval = setInterval(() => {
+            remainingTime--;
+            updateTimer();
+
+            if (remainingTime <= 0) {
+                clearInterval(timerInterval);
+                resolve();
+            }
+        }, 1000);
+    });
+}
+
+// 處理時間到
+async function handleTimeUp() {
+    if (isGuessingPhase) {
+        // 猜題時間結束
+        if (canDraw) {
+            // 扣除畫圖者的分數
+            const player = players.get(currentPlayer.id);
+            player.once((data) => {
+                data.score = Math.max(0, (data.score || 0) - 1);
+                player.put(data);
+            });
+
+            messages.set({
+                playerId: 'system',
+                playerName: 'System',
+                text: '時間到！由於沒有人猜對，畫圖者扣1分',
+                timestamp: Date.now()
+            });
+        }
+        
+        // 更換畫圖者
+        players.once((allPlayers) => {
+            const playerIds = Object.keys(allPlayers || {});
+            const currentIndex = playerIds.indexOf(currentPlayer.id);
+            const nextIndex = (currentIndex + 1) % playerIds.length;
+            gameState.get('currentDrawer').put(playerIds[nextIndex]);
+            if (playerIds[nextIndex] === currentPlayer.id) {
+                startNewRound();
+            }
+        });
+    } else {
+        // 作畫時間結束，自動提交
+        if (canDraw) {
+            submitDrawing();
+        }
+    }
+}
+
+// 提交作畫
+async function submitDrawing() {
+    if (!canDraw) return;
+    
+    submitButton.style.display = 'none';
+    clearInterval(timerInterval);
+    
+    // 開始猜題階段
+    gameState.get('gamePhase').put('guessing');
+    messages.set({
+        playerId: 'system',
+        playerName: 'System',
+        text: '作畫已提交！開始猜題（30秒）',
+        timestamp: Date.now()
+    });
+}
+
+// 監聽提交按鈕
+submitButton.addEventListener('click', submitDrawing);
+
+// 重置遊戲函數
+function resetGame() {
+    // 重新初始化 gun 實例
+    gun.get('drawingGame').put(null);
+    
+    // 等待一小段時間確保數據被清除
+    setTimeout(() => {
+        // 重新獲取遊戲狀態的引用
+        gameState.get('currentDrawer').put(null);
+        gameState.get('currentWord').put(null);
+        gameState.get('currentOptions').put(null);
+        gameState.get('gamePhase').put(null);
+        gameState.get('drawing').put(null);
+        
+        // 遍歷並清除所有玩家
+        players.map().once((data, key) => {
+            if (data) {
+                players.get(key).put(null);
+            }
+        });
+        
+        // 遍歷並清除所有訊息
+        messages.map().once((data, key) => {
+            if (data) {
+                messages.get(key).put(null);
+            }
+        });
+        
+        // 清除計時器
+        clearInterval(timerInterval);
+        timerElement.textContent = '剩餘時間: --:--';
+        timerElement.className = 'timer';
+        
+        // 清除畫布
+        clearCanvas();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // 清除選項
+        optionsDiv.innerHTML = '';
+        
+        // 清除玩家列表顯示
+        playersDiv.innerHTML = '';
+        
+        // 清除訊息顯示
+        messagesDiv.innerHTML = '';
+        
+        // 重置玩家狀態
+        if (currentPlayer) {
+            currentPlayer = null;
+            canDraw = false;
+        }
+        
+        // 重置遊戲階段
+        isGuessingPhase = false;
+        correctAnswer = '';
+        currentOptions = [];
+        
+        // 重置所有輸入狀態
+        joinButton.disabled = false;
+        playerNameInput.disabled = false;
+        playerNameInput.value = '';
+        submitButton.style.display = 'none';
+        messageInput.value = '';
+        
+        // 重置顏色和筆刷大小
+        colorPicker.value = '#000000';
+        currentColor = '#000000';
+        brushSize.value = '5';
+        currentSize = 5;
+        
+        // 清除詞彙顯示
+        wordDisplay.textContent = '';
+        
+        // 更新遊戲狀態顯示
+        updateGameStatus(0);
+        
+        // 添加系統訊息
+        setTimeout(() => {
+            messages.set({
+                playerId: 'system',
+                playerName: 'System',
+                text: '遊戲已完全重置，請重新整理頁面後加入遊戲',
+                timestamp: Date.now()
+            });
+        }, 500);
+        
+        // 提示使用者重新整理頁面
+        alert('遊戲已重置，請所有玩家重新整理頁面！');
+        location.reload();
+    }, 1000);
+}
+
+// 監聽重置按鈕點擊
+resetButton.addEventListener('click', () => {
+    const confirmReset = confirm('確定要重置遊戲嗎？這將清除所有遊戲進度。');
+    if (confirmReset) {
+        resetGame();
+    }
+});
 
 // 畫圖功能
 function draw(e) {
@@ -174,26 +385,68 @@ function displayOptions(options, enabled = true) {
     });
 }
 
+// 更新遊戲狀態顯示
+function updateGameStatus(playerCount) {
+    if (playerCount >= GAME_CONFIG.MAX_PLAYERS) {
+        gameStatusDiv.className = 'game-status full';
+        gameStatusDiv.textContent = `遊戲人數已滿（${playerCount}/${GAME_CONFIG.MAX_PLAYERS}）`;
+        joinButton.disabled = true;
+        playerNameInput.disabled = true;
+    } else if (playerCount < GAME_CONFIG.MIN_PLAYERS) {
+        gameStatusDiv.className = 'game-status waiting';
+        gameStatusDiv.textContent = `等待更多玩家加入（${playerCount}/${GAME_CONFIG.MIN_PLAYERS}）`;
+        if (currentPlayer) {
+            wordDisplay.textContent = '等待人數達到 3 人以開始遊戲';
+        }
+    } else {
+        gameStatusDiv.className = 'game-status ready';
+        gameStatusDiv.textContent = `遊戲進行中（${playerCount}/${GAME_CONFIG.MAX_PLAYERS}）`;
+    }
+}
+
+// 檢查玩家數量並更新遊戲狀態
+function checkPlayersAndUpdateGame(playersData) {
+    const playerCount = Object.keys(playersData || {}).length;
+    updateGameStatus(playerCount);
+    
+    // 如果人數不足，停止遊戲
+    if (playerCount < GAME_CONFIG.MIN_PLAYERS) {
+        gameState.get('currentWord').put(null);
+        gameState.get('currentOptions').put(null);
+        return false;
+    }
+    
+    return true;
+}
+
 // 開始新回合
 function startNewRound() {
-    clearCanvas();
-    const categories = Object.keys(wordCategories);
-    const randomCategory = categories[Math.floor(Math.random() * categories.length)];
-    const words = wordCategories[randomCategory];
-    const word = words[Math.floor(Math.random() * words.length)];
-    const options = generateOptions(word);
-    
-    currentOptions = options;
-    correctAnswer = word;
-    
-    gameState.get('currentWord').put(word);
-    gameState.get('currentOptions').put(options);
-    return word;
+    players.once(async (data) => {
+        if (!checkPlayersAndUpdateGame(data)) {
+            return null;
+        }
+        
+        clearCanvas();
+        const categories = Object.keys(wordCategories);
+        const randomCategory = categories[Math.floor(Math.random() * categories.length)];
+        const words = wordCategories[randomCategory];
+        const word = words[Math.floor(Math.random() * words.length)];
+        const options = generateOptions(word);
+        
+        currentOptions = options;
+        correctAnswer = word;
+        
+        gameState.get('currentWord').put(word);
+        gameState.get('currentOptions').put(options);
+        gameState.get('gamePhase').put('drawing');
+        
+        return word;
+    });
 }
 
 // 猜測答案
 function makeGuess(answer) {
-    if (!currentPlayer || canDraw) return;
+    if (!currentPlayer || canDraw || !isGuessingPhase) return;
     
     const isCorrect = answer === correctAnswer;
     const buttons = optionsDiv.getElementsByClassName('option-button');
@@ -222,18 +475,9 @@ function makeGuess(answer) {
             timestamp: Date.now()
         });
 
-        // 更換畫圖者
-        setTimeout(() => {
-            players.once((allPlayers) => {
-                const playerIds = Object.keys(allPlayers || {});
-                const currentIndex = playerIds.indexOf(currentPlayer.id);
-                const nextIndex = (currentIndex + 1) % playerIds.length;
-                gameState.get('currentDrawer').put(playerIds[nextIndex]);
-                if (playerIds[nextIndex] === currentPlayer.id) {
-                    currentWord = startNewRound();
-                }
-            });
-        }, 2000);
+        // 立即結束猜題階段
+        clearInterval(timerInterval);
+        handleTimeUp();
     } else {
         messages.set({
             playerId: currentPlayer.id,
@@ -243,6 +487,22 @@ function makeGuess(answer) {
         });
     }
 }
+
+// 監聽遊戲階段
+gameState.get('gamePhase').on(async (phase) => {
+    if (!phase || !currentPlayer) return;
+    
+    if (phase === 'drawing') {
+        // 開始作畫階段
+        if (canDraw) {
+            submitButton.style.display = 'block';
+            startTimer(GAME_CONFIG.DRAWING_TIME).then(handleTimeUp);
+        }
+    } else if (phase === 'guessing') {
+        // 開始猜題階段
+        startTimer(GAME_CONFIG.GUESSING_TIME, true).then(handleTimeUp);
+    }
+});
 
 // 監聽遊戲狀態
 gameState.get('currentOptions').on((options) => {
@@ -263,6 +523,12 @@ players.map().on((player, id) => {
     playerElement.textContent = `${player.name}: ${player.score || 0}分`;
 });
 
+// 監聽玩家列表變化
+players.on((data) => {
+    if (!data) return;
+    checkPlayersAndUpdateGame(data);
+});
+
 // 監聽當前畫圖者
 gameState.get('currentDrawer').on((drawerId) => {
     if (!drawerId || !currentPlayer) return;
@@ -278,8 +544,10 @@ gameState.get('currentDrawer').on((drawerId) => {
 
         if (canDraw) {
             wordDisplay.textContent = `請畫出: ${correctAnswer}`;
+            submitButton.style.display = 'block';
         } else {
             wordDisplay.textContent = '請猜出圖中畫的是什麼';
+            submitButton.style.display = 'none';
         }
     });
 });
@@ -293,23 +561,45 @@ gameState.get('currentWord').on((word) => {
     }
 });
 
-// 加入遊戲
+// 修改加入遊戲的邏輯
 joinButton.addEventListener('click', () => {
     const name = playerNameInput.value.trim();
     if (name) {
-        currentPlayer = {
-            name: name,
-            score: 0,
-            id: Math.random().toString(36).substring(2)
-        };
-        players.get(currentPlayer.id).put(currentPlayer);
-        joinButton.disabled = true;
-        playerNameInput.disabled = true;
-
         players.once((data) => {
-            if (Object.keys(data || {}).length === 1) {
-                gameState.get('currentDrawer').put(currentPlayer.id);
-                currentWord = startNewRound();
+            const playerCount = Object.keys(data || {}).length;
+            if (playerCount >= GAME_CONFIG.MAX_PLAYERS) {
+                alert('遊戲人數已達上限！');
+                return;
+            }
+            
+            currentPlayer = {
+                name: name,
+                score: 0,
+                id: Math.random().toString(36).substring(2)
+            };
+            
+            players.get(currentPlayer.id).put(currentPlayer);
+            joinButton.disabled = true;
+            playerNameInput.disabled = true;
+
+            // 如果是第一個玩家，等待其他玩家加入
+            if (playerCount === 0) {
+                messages.set({
+                    playerId: 'system',
+                    playerName: 'System',
+                    text: '等待更多玩家加入...',
+                    timestamp: Date.now()
+                });
+            } 
+            // 如果達到最小人數且還沒有畫圖者，設置第一個玩家為畫圖者
+            else if (playerCount + 1 >= GAME_CONFIG.MIN_PLAYERS) {
+                gameState.get('currentDrawer').once((drawerId) => {
+                    if (!drawerId) {
+                        const firstPlayer = Object.keys(data)[0];
+                        gameState.get('currentDrawer').put(firstPlayer);
+                        currentWord = startNewRound();
+                    }
+                });
             }
         });
     }
